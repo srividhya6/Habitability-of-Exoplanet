@@ -91,7 +91,7 @@ def predict():
         input_df = pd.DataFrame([row], columns=EXPECTED_FEATURES)
 
         prob = pipeline.predict_proba(input_df)[0][1]
-        pred = int(prob >= 0.2)
+        pred = int(prob >= 0.15)
 
         return jsonify({
             "habitability_prediction": "Habitable" if pred == 1 else "Non-Habitable",
