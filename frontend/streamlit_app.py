@@ -13,7 +13,7 @@ from pathlib import Path
 
 st.set_page_config(page_title="Exoplanet Habitability", layout="wide")
 
-DEFAULT_API = "https://habitability-of-exoplanets-wpdp.onrender.com"
+DEFAULT_API = "https://habitability-of-exoplanet.onrender.com"
 #DEFAULT_API = "http://localhost:5000"
 
 st.sidebar.title("Settings")
