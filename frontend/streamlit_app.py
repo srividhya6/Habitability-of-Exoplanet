@@ -1,20 +1,15 @@
-import os
-import json
+import streamlit as st
 import requests
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
 import plotly.express as px
-import streamlit as st
-
+import plotly.graph_objects as go
+import os
 from io import BytesIO
 from datetime import datetime
-from pathlib import Path
 
 st.set_page_config(page_title="Exoplanet Habitability", layout="wide")
 
-DEFAULT_API = "https://habitability-of-exoplanet.onrender.com"
-#DEFAULT_API = "http://localhost:5000"
+DEFAULT_API = "http://localhost:5000"
 
 st.sidebar.title("Settings")
 BASE_URL = st.sidebar.text_input("API base URL", value=DEFAULT_API)
@@ -47,12 +42,12 @@ with tabs[0]:
             planet_density = st.number_input("Planet Density", value=5.5, step=0.01)
             pl_eqt = st.number_input("Equilibrium Temp (K)", value=300.0, step=1.0)
         with col2:
-            pl_rade = st.number_input("Planet Radius (R⊕)", value=1.0, step=0.01)
-            pl_bmasse = st.number_input("Planet Mass (M⊕)", value=1.0, step=0.01)
-            st_teff = st.number_input("Stellar Teff (K)", value=5800.0, step=1.0)
+            pl_rade = st.number_input("Radius (Earth radii)", value=1.0, step=0.01)
+            pl_bmasse = st.number_input("Mass (Earth masses)", value=1.0, step=0.01)
+            st_teff = st.number_input("Star Teff (K)", value=5800.0, step=1.0)
         with col3:
             star_luminosity = st.number_input("Star Luminosity (L☉)", value=1.0, step=0.01)
-            star_type = st.selectbox("Star Type", options=["M", "K", "G"], index=2)
+            star_type = st.selectbox("Star Type", options=["G", "K", "M"], index=0)
 
         submitted = st.form_submit_button("Predict")
 
@@ -69,245 +64,337 @@ with tabs[0]:
             "star_type_K": 1 if star_type == "K" else 0,
             "star_type_G": 1 if star_type == "G" else 0,
         }
-
-        # Basic validation before sending to API
         try:
-            if any(pd.isna(v) for v in payload.values()):
-                st.error("Please provide all inputs before predicting.")
-            else:
-                res = requests.post(f"{BASE_URL.rstrip('/')}/predict", json=payload, timeout=20)
-                if res.status_code != 200:
-                    detail = res.text
-                    try:
-                        detail_json = res.json()
-                        detail = json.dumps(detail_json, indent=2)
-                    except Exception:
-                        pass
-                    st.error(f"Server returned {res.status_code}: {detail}")
-                else:
-                    data = res.json()
-                    prob = data.get("habitability_probability")
-                    label = data.get("habitability_prediction")
-                    filled = data.get("filled_defaults", [])
-                    st.success(f"Prediction: {label} — Probability: {prob}")
-                    if filled:
-                        st.info(f"Missing inputs were filled with dataset medians for: {', '.join(filled)}")
-        except requests.exceptions.RequestException as e:
-            st.error(f"Request failed: {e}")
+            res = requests.post(f"{BASE_URL}/predict", json=payload, timeout=10)
+            res.raise_for_status()
+            data = res.json()
+            prob = data.get("habitability_probability")
+            label = data.get("habitability_prediction")
+            filled = data.get("filled_defaults", [])
+            st.success(f"Prediction: {label} — Probability: {prob}")
+            if filled:
+                st.info(f"Missing inputs were filled with dataset medians for: {', '.join(filled)}")
         except Exception as e:
-            st.error(f"Prediction failed: {e}")
+            st.error(f"Request failed: {e}")
 
 # --- Top Habitable Tab ---
 with tabs[1]:
     st.header("Top Habitable Exoplanets")
     try:
-        # Use API endpoint instead of local CSV
-        df_top = pd.DataFrame()
-        try:
-            resp = requests.get(f"{BASE_URL.rstrip('/')}/top-habitable", timeout=20)
-            resp.raise_for_status()
-            content_type = resp.headers.get("Content-Type", "")
-            if "application/json" in content_type or resp.text.strip().startswith("["):
-                df_top = pd.DataFrame(resp.json())
+        # Load data from CSV
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        csv_path = os.path.join(current_dir, "../notebook/exo_habitability_final.csv")
+        df = pd.read_csv(csv_path)
+        
+        # Display data table
+        st.subheader("Top Habitable Exoplanets Data")
+        top_df = df.sort_values("HSI", ascending=False).head(20)
+        st.dataframe(top_df, use_container_width=True)
+        
+        # Export functionality
+        st.subheader("Export Reports")
+        export_col1, export_col2, export_col3 = st.columns(3)
+        
+        with export_col1:
+            # Export to Excel
+            if st.button("📊 Export as Excel", key="export_excel"):
+                buffer = BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    # Top 20 planets sheet
+                    top_df.to_excel(writer, sheet_name='Top 20 Planets', index=False)
+                    
+                    # Summary statistics sheet
+                    summary_data = {
+                        'Metric': [
+                            'Total Exoplanets',
+                            'Habitable Planets (P > 0.5)',
+                            'Avg Habitability Probability',
+                            'Max HSI Score',
+                            'Avg HSI Score',
+                            'Report Generated'
+                        ],
+                        'Value': [
+                            len(df),
+                            (df["habitability_probability"] > 0.5).sum(),
+                            f"{df['habitability_probability'].mean():.4f}",
+                            f"{df['HSI'].max():.4f}",
+                            f"{df['HSI'].mean():.4f}",
+                            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        ]
+                    }
+                    summary_df = pd.DataFrame(summary_data)
+                    summary_df.to_excel(writer, sheet_name='Summary', index=False)
+                
+                buffer.seek(0)
+                st.download_button(
+                    label="💾 Download Excel File",
+                    data=buffer,
+                    file_name=f"exoplanet_habitability_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+                st.success("✅ Excel file ready for download!")
+        
+        with export_col2:
+            # Export CSV
+            if st.button("📄 Export as CSV", key="export_csv"):
+                csv_buffer = top_df.to_csv(index=False)
+                st.download_button(
+                    label="💾 Download CSV File",
+                    data=csv_buffer,
+                    file_name=f"top_habitable_exoplanets_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
+                st.success("✅ CSV file ready for download!")
+        
+        with export_col3:
+            # Export as HTML
+            if st.button("🌐 Export as HTML", key="export_html"):
+                html_content = f"""
+                <html>
+                <head>
+                    <style>
+                        body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                        h1 {{ color: #2c3e50; }}
+                        h2 {{ color: #34495e; margin-top: 30px; }}
+                        table {{ border-collapse: collapse; width: 100%; margin: 20px 0; }}
+                        th, td {{ border: 1px solid #bdc3c7; padding: 12px; text-align: left; }}
+                        th {{ background-color: #3498db; color: white; }}
+                        tr:nth-child(even) {{ background-color: #ecf0f1; }}
+                        .summary {{ background-color: #d5f4e6; padding: 15px; border-radius: 5px; margin: 20px 0; }}
+                        .footer {{ margin-top: 40px; text-align: center; color: #7f8c8d; font-size: 12px; }}
+                    </style>
+                </head>
+                <body>
+                    <h1>🔭 Exoplanet Habitability Report</h1>
+                    <p><strong>Generated:</strong> {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
+                    
+                    <div class="summary">
+                        <h2>Summary Statistics</h2>
+                        <p><strong>Total Exoplanets:</strong> {len(df)}</p>
+                        <p><strong>Habitable Planets (P > 0.5):</strong> {(df["habitability_probability"] > 0.5).sum()}</p>
+                        <p><strong>Average Habitability Probability:</strong> {df['habitability_probability'].mean():.4f}</p>
+                        <p><strong>Maximum HSI Score:</strong> {df['HSI'].max():.4f}</p>
+                        <p><strong>Average HSI Score:</strong> {df['HSI'].mean():.4f}</p>
+                    </div>
+                    
+                    <h2>Top 20 Habitable Exoplanets</h2>
+                    {top_df.to_html(index=False, border=0)}
+                    
+                    <div class="footer">
+                        <p>This report was generated by the Exoplanet Habitability Explorer</p>
+                    </div>
+                </body>
+                </html>
+                """
+                st.download_button(
+                    label="💾 Download HTML File",
+                    data=html_content,
+                    file_name=f"exoplanet_habitability_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+                    mime="text/html"
+                )
+                st.success("✅ HTML file ready for download!")
+        
+        st.divider()
+        
+        # Create visualizations
+        st.subheader("Visualizations")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Bar chart of top 20 planets by HSI
+            if not df.empty and "HSI" in df.columns:
+                fig_hsi = px.bar(
+                    top_df,
+                    x="pl_name",
+                    y="HSI",
+                    title="Top 20 Planets by Habitability Score Index (HSI)",
+                    labels={"pl_name": "Planet Name", "HSI": "HSI"},
+                    color="HSI",
+                    color_continuous_scale="RdYlGn"
+                )
+                fig_hsi.update_layout(xaxis_tickangle=-45, height=500)
+                st.plotly_chart(fig_hsi, use_container_width=True)
             else:
-                # fallback if API returned CSV text
-                from io import StringIO
-                df_top = pd.read_csv(StringIO(resp.text))
-        except Exception as e:
-            st.error(f"Failed to load top habitable data: {e}")
-            df_top = pd.DataFrame()
-
-        if df_top.empty:
-            st.warning("No top habitable data available.")
-        else:
-            st.subheader("Top Habitable Table")
-            st.dataframe(df_top, use_container_width=True)
-
-            # export buttons (CSV / Excel / HTML)
-            csv_bytes = df_top.to_csv(index=False).encode("utf-8")
-            excel_io = BytesIO()
-            df_top.to_excel(excel_io, index=False)
-            html_str = df_top.to_html(index=False)
-
-            col_exp1, col_exp2, col_exp3 = st.columns(3)
-            with col_exp1:
-                st.download_button("Export CSV", data=csv_bytes, file_name="top_habitable.csv", mime="text/csv")
-            with col_exp2:
-                st.download_button("Export Excel", data=excel_io.getvalue(), file_name="top_habitable.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-            with col_exp3:
-                st.download_button("Export HTML", data=html_str, file_name="top_habitable.html", mime="text/html")
-
-            # Plotly visualization: ensure fig_avg is used
-            try:
-                if "star_type" in df_top.columns and "HSI" in df_top.columns:
-                    grouped = df_top.groupby("star_type", as_index=False).mean()
-                    fig_avg = px.bar(grouped, x="star_type", y="HSI", title="Average HSI by Star Type")
-                    st.plotly_chart(fig_avg, use_container_width=True)
-                else:
-                    if "HSI" in df_top.columns and "pl_rade" in df_top.columns:
-                        fig_avg = px.scatter(df_top, x="pl_rade", y="HSI", color=df_top.columns[0] if len(df_top.columns) > 0 else None, title="HSI vs Planet Radius")
-                        st.plotly_chart(fig_avg, use_container_width=True)
-            except Exception as e:
-                st.error(f"Failed to render top-habitable plots: {e}")
-
+                st.warning("HSI column not found in data")
+        
+        with col2:
+            # Habitability Score Distribution
+            if "habitability_probability" in df.columns:
+                fig_dist = px.histogram(
+                    df,
+                    x="habitability_probability",
+                    nbins=30,
+                    title="Distribution of Habitability Probabilities",
+                    labels={"habitability_probability": "Habitability Probability"},
+                    color_discrete_sequence=["#3498db"]
+                )
+                fig_dist.update_layout(height=500, showlegend=False)
+                st.plotly_chart(fig_dist, use_container_width=True)
+            else:
+                st.warning("Habitability probability column not found in data")
+        
+        st.divider()
+        
+        # Additional statistics
+        st.subheader("Habitability Statistics")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            habitable_count = (df["habitability_probability"] > 0.5).sum()
+            st.metric("Habitable Planets (P > 0.5)", habitable_count)
+        
+        with col2:
+            avg_probability = df["habitability_probability"].mean()
+            st.metric("Avg Habitability Probability", f"{avg_probability:.4f}")
+        
+        with col3:
+            max_hsi = df["HSI"].max()
+            st.metric("Max HSI Score", f"{max_hsi:.4f}")
+        
+        with col4:
+            avg_hsi = df["HSI"].mean()
+            st.metric("Avg HSI Score", f"{avg_hsi:.4f}")
     except FileNotFoundError:
-        st.error("Top habitable data file not found.")
+        st.error("Exoplanet data CSV file not found. Please ensure 'exo_habitability_final.csv' exists in the notebook folder.")
     except Exception as e:
         st.error(f"Failed to load top habitable data: {e}")
 
 # --- Feature Importance ---
 with tabs[2]:
     st.header("Feature Importance")
-    fi_path = Path(__file__).resolve().parent.parent / "notebook" / "feature_importance_ranking.csv"
-
-    if not fi_path.exists():
-        st.error(f"Feature importance file not found: {fi_path}")
-    else:
-        try:
-            df_feat = pd.read_csv(fi_path)
-        except Exception as e:
-            st.error(f"Could not read feature importance CSV: {e}")
-            df_feat = pd.DataFrame()
-
-        if df_feat.empty:
-            st.warning("Feature importance file is empty.")
-        else:
-            feat_cols = [c for c in df_feat.columns if "feat" in c.lower() or "feature" in c.lower()]
-            imp_cols = [c for c in df_feat.columns if "imp" in c.lower() or "importance" in c.lower() or "score" in c.lower()]
-
-            y_col = feat_cols[0] if feat_cols else df_feat.columns[0]
-            x_col = imp_cols[0] if imp_cols else (df_feat.columns[1] if len(df_feat.columns) > 1 else df_feat.columns[0])
-
-            try:
-                df_feat[x_col] = pd.to_numeric(df_feat[x_col], errors="coerce")
-                df_feat = df_feat.sort_values(by=x_col, ascending=False).reset_index(drop=True)
-            except Exception:
-                df_feat = df_feat.reset_index(drop=True)
-
-            st.subheader("Feature Importance Table")
-            st.dataframe(df_feat, use_container_width=True)
-
-            max_options = max(3, min(len(df_feat), 50))
-            top_n = st.slider("Adjust the figure size", min_value=3, max_value=max_options, value=min(10, len(df_feat)))
-            plot_df = df_feat.head(top_n)
-
-            fig, ax = plt.subplots(figsize=(8, max(3, len(plot_df) * 0.5)))
-            sns.barplot(data=plot_df, x=x_col, y=y_col, ax=ax, palette="viridis")
-            ax.set_title("Feature Importance")
-            ax.set_xlabel(x_col.replace("_", " ").title())
-            ax.set_ylabel(y_col.replace("_", " ").title())
-            plt.tight_layout()
-            st.pyplot(fig)
+    try:
+        # Load feature importance data from CSV
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        csv_path = os.path.join(current_dir, "../notebook/feature_importance_ranking.csv")
+        fi = pd.read_csv(csv_path)
+        
+        # Rename 'Feature' column to 'feature' for consistency
+        fi = fi.rename(columns={"Feature": "feature"})
+        
+        # Display data table
+        st.subheader("Feature Importance Rankings Table")
+        st.dataframe(fi, use_container_width=True)
+        
+        st.divider()
+        
+        # Create visualizations
+        st.subheader("Feature Importance Visualizations")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Bar chart with average importance (horizontal)
+            fi_sorted = fi.sort_values("Average_Importance", ascending=True)
+            fig_avg = px.bar(
+                fi_sorted, 
+                y="feature", 
+                x="Average_Importance", 
+                orientation="h",
+                title="Feature vs Average Importance",
+                labels={"feature": "Feature", "Average_Importance": "Average Importance"},
+                color="Average_Importance",
+                color_continuous_scale="Viridis"
+            )
+            fig_avg.update_layout(height=600)
+            st.plotly_chart(fig_avg, use_container_width=True)
+        
+        with col2:
+            # Comparison of different importance methods (vertical)
+            importance_methods = ["LR_Coeff", "RF_Importance", "XGB_Importance", "Perm_Importance"]
+            fi_melted = fi.melt(id_vars="feature", value_vars=importance_methods, 
+                                var_name="Method", value_name="Importance")
+            fig_compare = px.bar(
+                fi_melted,
+                x="feature",
+                y="Importance",
+                color="Method",
+                title="Importance by Feature and Method",
+                barmode="group"
+            )
+            fig_compare.update_layout(height=600, xaxis_tickangle=-45)
+            st.plotly_chart(fig_compare, use_container_width=True)
+        
+    except FileNotFoundError:
+        st.error("Feature importance CSV file not found. Please ensure 'feature_importance_ranking.csv' exists in the notebook folder.")
+    except Exception as e:
+        st.error(f"Failed to load feature importance: {e}")
 
 # --- Model & Sampling Comparisons ---
 with tabs[3]:
     st.header("Model & Sampling Comparisons")
-
-    col1, col2 = st.columns(2)
-
-    # -------- Model Comparison (from API) --------
-    with col1:
+    cols = st.columns(2)
+    with cols[0]:
         try:
-            resp = requests.get(f"{BASE_URL.rstrip('/')}/model-comparisons", timeout=20)
-            resp.raise_for_status()
-            content_type = resp.headers.get("Content-Type", "")
-            if "application/json" in content_type or resp.text.strip().startswith("["):
-                df_mc = pd.DataFrame(resp.json())
-            else:
-                from io import StringIO
-                df_mc = pd.read_csv(StringIO(resp.text))
-            if df_mc.empty:
-                st.info("Model comparison data is empty.")
-            else:
-                st.subheader("Model Comparison (Summary)")
-                st.dataframe(df_mc, use_container_width=True)
+            r = requests.get(f"{BASE_URL}/model-comparisons", timeout=10)
+            r.raise_for_status()
+            mc = pd.DataFrame(r.json())
+            st.subheader("Model Comparison")
+            st.dataframe(mc)
         except Exception as e:
-            st.error(f"Failed to load model comparison data from API: {e}")
-
-    # -------- Sampling Techniques (from API) --------
-    with col2:
+            st.error(f"Failed to load model comparisons: {e}")
+    with cols[1]:
         try:
-            resp = requests.get(f"{BASE_URL.rstrip('/')}/sampling-comparisons", timeout=20)
-            resp.raise_for_status()
-            content_type = resp.headers.get("Content-Type", "")
-            if "application/json" in content_type or resp.text.strip().startswith("["):
-                df_sc = pd.DataFrame(resp.json())
-            else:
-                from io import StringIO
-                df_sc = pd.read_csv(StringIO(resp.text))
-            if df_sc.empty:
-                st.info("Sampling techniques data is empty.")
-            else:
-                st.subheader("Sampling Techniques (Summary)")
-                st.dataframe(df_sc, use_container_width=True)
+            r = requests.get(f"{BASE_URL}/sampling-comparisons", timeout=10)
+            r.raise_for_status()
+            sc = pd.DataFrame(r.json())
+            st.subheader("Sampling Techniques")
+            st.dataframe(sc)
         except Exception as e:
-            st.error(f"Failed to load sampling techniques data from API: {e}")
-
-    # Star-Planet Parameter Correlations (use API exo-final)
+            st.error(f"Failed to load sampling comparisons: {e}")
+    
+    # Star-Planet Parameter Correlations
     st.subheader("Star-Planet Parameter Correlations")
     try:
-        resp = requests.get(f"{BASE_URL.rstrip('/')}/exo-final", timeout=30)
-        resp.raise_for_status()
-        content_type = resp.headers.get("Content-Type", "")
-        if "application/json" in content_type or resp.text.strip().startswith("["):
-            df_data = pd.DataFrame(resp.json())
-        else:
-            from io import StringIO
-            df_data = pd.read_csv(StringIO(resp.text))
-
-        if df_data.empty:
-            st.warning("Dataset is empty.")
-        else:
-            cols = [c for c in final_features if c in df_data.columns]
-            if not cols:
-                cols = df_data.select_dtypes(include="number").columns.tolist()
-            corr = df_data[cols].corr()
-
-            st.markdown("Correlation matrix (rounded)")
-            st.dataframe(corr.round(3), use_container_width=True)
-
-            fig, ax = plt.subplots(figsize=(8, max(4, len(cols) * 0.3)))
-            sns.heatmap(corr, annot=True, fmt=".2f", cmap="coolwarm", ax=ax, vmin=-1, vmax=1)
-            ax.set_title("Feature Correlation Heatmap")
-            plt.tight_layout()
-            st.pyplot(fig)
+        # Load exoplanet data for correlations
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        exo_path = os.path.join(current_dir, "../notebook/exo_habitability_final.csv")
+        exo_df = pd.read_csv(exo_path)
+        
+        # Select star and planet parameters
+        correlation_features = [
+            "HSI", "habitability_probability", "pl_rade", "pl_bmasse", "pl_eqt", 
+            "planet_density", "pl_insol", "st_teff", "star_luminosity", "pl_orbper"
+        ]
+        
+        # Filter to available columns
+        available_cols = [col for col in correlation_features if col in exo_df.columns]
+        corr_matrix = exo_df[available_cols].corr()
+        
+        # Create heatmap
+        fig_corr = go.Figure(data=go.Heatmap(
+            z=corr_matrix.values,
+            x=corr_matrix.columns,
+            y=corr_matrix.columns,
+            colorscale='RdBu',
+            zmid=0,
+            zmin=-1,
+            zmax=1,
+            text=corr_matrix.values.round(2),
+            texttemplate='%{text}',
+            textfont={"size": 10},
+            hovertemplate='%{y} vs %{x}<br>Correlation: %{z:.3f}<extra></extra>'
+        ))
+        fig_corr.update_layout(
+            title="Star-Planet Parameter Correlations",
+            xaxis_tickangle=-45,
+            height=700,
+            width=900
+        )
+        st.plotly_chart(fig_corr, use_container_width=True)
+        
     except Exception as e:
-        st.error(f"Failed to render correlation plot from API: {e}")
+        st.warning(f"Could not load correlation plot: {e}")
 
 # --- Full dataset / extras ---
 with tabs[4]:
-    st.header("Dataset")
+    st.header("Exoplanet Dataset")
     try:
-        resp = requests.get(f"{BASE_URL.rstrip('/')}/exo-final", timeout=30)
-        resp.raise_for_status()
-        content_type = resp.headers.get("Content-Type", "")
-        if "application/json" in content_type or resp.text.strip().startswith("["):
-            df_full = pd.DataFrame(resp.json())
-        else:
-            from io import StringIO
-            df_full = pd.read_csv(StringIO(resp.text))
+        r = requests.get(f"{BASE_URL}/exo-final", timeout=10)
+        r.raise_for_status()
+        exo = pd.DataFrame(r.json())
+        st.dataframe(exo)
     except Exception as e:
-        st.error(f"Failed to load dataset from API: {e}")
-        df_full = pd.DataFrame()
+        st.error(f"Failed to load dataset: {e}")
 
-    if df_full.empty:
-        st.warning("Dataset not available.")
-    else:
-        st.subheader("Full Dataset")
-        st.dataframe(df_full, use_container_width=True)
-
-        csv_bytes = df_full.to_csv(index=False).encode("utf-8")
-        excel_io = BytesIO()
-        df_full.to_excel(excel_io, index=False)
-        html_str = df_full.to_html(index=False)
-
-        col1_exp, col2_exp, col3_exp = st.columns(3)
-        with col1_exp:
-            st.download_button("Export CSV", data=csv_bytes, file_name="exo_final.csv", mime="text/csv")
-        with col2_exp:
-            st.download_button("Export Excel", data=excel_io.getvalue(), file_name="exo_final.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        with col3_exp:
-            st.download_button("Export HTML", data=html_str, file_name="exo_final.html", mime="text/html")
 
 st.markdown("---")
 st.caption("Tip: run the Flask API (`python notebook/api/app.py`) and then run this Streamlit app (`streamlit run frontend/streamlit_app.py`).")
