@@ -9,7 +9,7 @@ from datetime import datetime
 
 st.set_page_config(page_title="Exoplanet Habitability", layout="wide")
 
-DEFAULT_API = "http://localhost:5000"
+DEFAULT_API = "https://habitability-of-exoplanet.onrender.com"
 
 st.sidebar.title("Settings")
 BASE_URL = st.sidebar.text_input("API base URL", value=DEFAULT_API)
